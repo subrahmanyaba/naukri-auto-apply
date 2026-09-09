@@ -10,6 +10,24 @@ Three Tampermonkey userscripts for assisted job-application workflows on Naukri.
 - naukri_job_apply.user.js — runs on individual Naukri job pages, presses Apply, handles common text, number, contenteditable, and radio-button questions, and uses configurable answers.
 - naukri_success_close.user.js — runs on Naukri result pages, shows a five-second close timer, requests the launcher to close the tab, and records Apply on site jobs.
 
+## The three Naukri application flows
+
+Naukri applications commonly fall into three practical flows. The scripts are designed around these differences:
+
+### 1. Direct apply with no extra questions
+
+The job opens an application flow where the candidate can submit by pressing Apply or completing only the standard profile submission. This is the simplest flow. The job-page script looks for the visible Apply control, submits the application, and waits for a confirmation or result page.
+
+### 2. Direct apply with recruiter questions
+
+The application opens Naukri's question drawer or chat-style form. The recruiter may ask questions such as experience, notice period, yes/no questions, numeric answers, text answers, or radio-button choices. The job-page script identifies the current question, fills recognized answers, and presses Save/Next when enabled. Unknown or sensitive questions pause the flow so the candidate can review or answer manually. Learned answers are stored locally in the browser for later applications.
+
+### 3. Apply on company site
+
+Some jobs do not complete inside Naukri. Instead, Naukri shows an Apply on company site or external application flow. The success handler records the job title, company, job ID, URL, and timestamp in local browser storage, shows a close timer, and asks the launcher to close the tab. At the end of a queue, the launcher can download the recorded jobs as naukri-apply-on-site.txt for separate follow-up.
+
+These flows are different because the page structure, confirmation behavior, and amount of candidate input can vary. The automation can assist with repetitive steps, but it cannot guarantee that every application was accepted or that every changing Naukri layout will be detected correctly. Always review sensitive questions and application confirmations.
+
 ## Requirements
 
 - Chrome or Chromium-based browser.
@@ -67,4 +85,3 @@ The scripts do not send resume data to a third-party server. Learned answers are
 ## License
 
 Add the license you prefer before publishing. If you want a permissive default, MIT is a common choice.
-
