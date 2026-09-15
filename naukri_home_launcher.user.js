@@ -8,6 +8,7 @@
   const q=JSON.parse(localStorage.getItem(KEY)||'{"running":false,"queue":[],"opened":[],"done":[],"batchSize":10}');
   q.batchSize=100;
   const OPEN_DELAY_MS=3000;
+  const EXTERNAL_CARD_RE=/apply\s+on\s+(the\s+)?(company\s+)?(site|website)|company\s+(site|website)|employer\s+(site|website)/i;
   let pumping=false;
   const openTabs=new Map();
   let exportTimer=null;
@@ -49,11 +50,15 @@
   }
   function panel(){let p=document.createElement('div');p.id='codex-launcher';Object.assign(p.style,{position:'fixed',right:'16px',bottom:'16px',zIndex:2e9,background:'#17202a',color:'#fff',padding:'10px',borderRadius:'8px',font:'12px Arial'});p.innerHTML='<b>Naukri launcher</b><br><button id="codex-start">Start queue</button> <button id="codex-stop">Stop</button> <button id="codex-reset">Reset</button><br><span id="codex-count"></span>';document.body.append(p);document.getElementById('codex-start').onclick=start;document.getElementById('codex-stop').onclick=()=>{q.running=false;save();count();};document.getElementById('codex-reset').onclick=()=>{q.running=false;q.queue=[];q.opened=[];q.done=[];save();count();};count();}
   function count(){let e=document.getElementById('codex-count');if(e)e.textContent=`Queued: ${q.queue.length} | Opened: ${q.opened.length} | Batch max: 100 | Done: ${q.done.length} | ${q.running?'RUNNING':'STOPPED'}`;}
+  function isAppliedCard(card){
+    const nodes=[...card.querySelectorAll('button,a,[role="button"],span,div')];
+    return nodes.some(n=>/^applied$/i.test((n.getAttribute('title')||n.getAttribute('aria-label')||n.textContent||'').trim()));
+  }
   function refreshQueue(){
     const known=new Set([...q.queue,...q.opened,...q.done]);
     for(const card of document.querySelectorAll('article.jobTuple[data-job-id]')){
       const id=card.dataset.jobId;
-      if(id&&!known.has(id)){q.queue.push(id);known.add(id);}
+      if(id&&id!=='external'&&!known.has(id)&&!isAppliedCard(card)&&!EXTERNAL_CARD_RE.test(card.textContent||'')){q.queue.push(id);known.add(id);}
     }
   }
   async function start(){
@@ -72,9 +77,9 @@
         const id=q.queue.shift();
         if(q.opened.includes(id)||q.done.includes(id))continue;
         const card=document.querySelector(`article.jobTuple[data-job-id="${CSS.escape(id)}"]`);
-        if(!card)continue;
+        if(!card){q.done.push(id);save();count();continue;}
         const url=jobUrl(card,id);
-        if(!url){notify(`Could not build a URL for job ${id}; skipped.`);count();continue;}
+        if(!url){notify(`Could not build a URL for job ${id}; skipped.`);q.done.push(id);save();count();continue;}
         try{
           const tab=GM_openInTab(url,{active:false,insert:true,setParent:true});
           openTabs.set(id,tab);
@@ -82,6 +87,7 @@
           console.info('[Naukri launcher] opened',id,url);
         }catch(error){
           notify(`Tab blocked for job ${id}. Check Tampermonkey permission.`);
+          q.queue.unshift(id);save();
           console.error(error);
         }
         await sleep(OPEN_DELAY_MS);
