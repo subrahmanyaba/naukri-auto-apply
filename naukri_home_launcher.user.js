@@ -8,6 +8,11 @@
   const q=JSON.parse(localStorage.getItem(KEY)||'{"running":false,"queue":[],"opened":[],"done":[],"batchSize":10}');
   q.batchSize=100;
   const OPEN_DELAY_MS=3000;
+  const RETRY_MAX=2;
+  const RETRY_KEY='codexNaukriRetries';
+  const readRetries=()=>{try{return JSON.parse(localStorage.getItem(RETRY_KEY)||'{}')}catch{return{}}};
+  const writeRetries=v=>{try{localStorage.setItem(RETRY_KEY,JSON.stringify(v))}catch{}};
+  const EXTERNAL_CARD_RE=/apply\s+on\s+(the\s+)?(company\s+)?(site|website)|company\s+(site|website)|employer\s+(site|website)/i;
   let pumping=false;
   const openTabs=new Map();
   let exportTimer=null;
@@ -18,7 +23,16 @@
   const onSiteList=()=>{try{return JSON.parse(localStorage.getItem('codexNaukriOnSiteJobs')||'[]')}catch{return[]}};
   function downloadOnSiteList(){const list=onSiteList();if(!list.length)return;const lines=['Naukri Apply-on-Site Jobs','Generated: '+new Date().toLocaleString(),''];list.forEach((x,i)=>lines.push(`${i+1}. ${x.jobTitle||'Untitled'}${x.company?' — '+x.company:''}`,`Job ID: ${x.jobId||'unknown'}`,`URL: ${x.url||''}`,`Recorded: ${x.recordedAt||''}`,'') );const link=document.createElement('a');link.href=URL.createObjectURL(new Blob([lines.join('\n')],{type:'text/plain;charset=utf-8'}));link.download='naukri-apply-on-site.txt';document.body.append(link);link.click();setTimeout(()=>{URL.revokeObjectURL(link.href);link.remove();},2000);}
   function scheduleExport(){clearTimeout(exportTimer);exportTimer=setTimeout(()=>{const active=q.opened.filter(id=>!q.done.includes(id)).length;if(active===0&&!q.queue.length)downloadOnSiteList();},1800);}
-  function handleClose(data){if(!data?.jobId||data.type!=='close'||processedClose.has(data.nonce))return;processedClose.add(data.nonce);const tab=openTabs.get(data.jobId);try{if(typeof tab?.close==='function')tab.close();else console.warn('[Naukri launcher] no close handle for',data.jobId)}catch(error){console.warn('[Naukri launcher] tab close failed',error)}openTabs.delete(data.jobId);if(!q.done.includes(data.jobId))q.done.push(data.jobId);save();count();scheduleExport();}
+  function handleClose(data){if(!data?.jobId||data.type!=='close'||processedClose.has(data.nonce))return;processedClose.add(data.nonce);const tab=openTabs.get(data.jobId);try{if(typeof tab?.close==='function')tab.close();else console.warn('[Naukri launcher] no close handle for',data.jobId)}catch(error){console.warn('[Naukri launcher] tab close failed',error)}openTabs.delete(data.jobId);save();
+  if(data.retry===true){
+    const retries=readRetries();const count=retries[data.jobId]||0;
+    if(count>=RETRY_MAX){delete retries[data.jobId];writeRetries(retries);if(!q.done.includes(data.jobId))q.done.push(data.jobId);console.warn('[Naukri launcher]',data.jobId,'retried',count,'times; skipping. Reason:',data.reason);}
+    else{retries[data.jobId]=count+1;writeRetries(retries);q.queue.unshift(data.jobId);console.warn('[Naukri launcher] requeued',data.jobId,'(retry',count+1+') Reason:',data.reason);}
+  }else{
+    if(!q.done.includes(data.jobId))q.done.push(data.jobId);
+    console.warn('[Naukri launcher] done',data.jobId,'Reason:',data.reason||'applied');
+  }
+  save();count();scheduleExport();}
   closeChannel?.addEventListener('message',event=>handleClose(event.data));
   window.addEventListener('storage',event=>{if(event.key!=='codexNaukriCloseRequest'||!event.newValue)return;try{handleClose(JSON.parse(event.newValue))}catch(error){console.warn('[Naukri launcher] close request parse failed',error)}});
   function notify(message){
@@ -49,11 +63,15 @@
   }
   function panel(){let p=document.createElement('div');p.id='codex-launcher';Object.assign(p.style,{position:'fixed',right:'16px',bottom:'16px',zIndex:2e9,background:'#17202a',color:'#fff',padding:'10px',borderRadius:'8px',font:'12px Arial'});p.innerHTML='<b>Naukri launcher</b><br><button id="codex-start">Start queue</button> <button id="codex-stop">Stop</button> <button id="codex-reset">Reset</button><br><span id="codex-count"></span>';document.body.append(p);document.getElementById('codex-start').onclick=start;document.getElementById('codex-stop').onclick=()=>{q.running=false;save();count();};document.getElementById('codex-reset').onclick=()=>{q.running=false;q.queue=[];q.opened=[];q.done=[];save();count();};count();}
   function count(){let e=document.getElementById('codex-count');if(e)e.textContent=`Queued: ${q.queue.length} | Opened: ${q.opened.length} | Batch max: 100 | Done: ${q.done.length} | ${q.running?'RUNNING':'STOPPED'}`;}
+  function isAppliedCard(card){
+    const nodes=[...card.querySelectorAll('button,a,[role="button"],span,div')];
+    return nodes.some(n=>/^applied$/i.test((n.getAttribute('title')||n.getAttribute('aria-label')||n.textContent||'').trim()));
+  }
   function refreshQueue(){
     const known=new Set([...q.queue,...q.opened,...q.done]);
     for(const card of document.querySelectorAll('article.jobTuple[data-job-id]')){
       const id=card.dataset.jobId;
-      if(id&&!known.has(id)){q.queue.push(id);known.add(id);}
+      if(id&&id!=='external'&&!known.has(id)&&!isAppliedCard(card)&&!EXTERNAL_CARD_RE.test(card.textContent||'')){q.queue.push(id);known.add(id);}
     }
   }
   async function start(){
@@ -72,9 +90,9 @@
         const id=q.queue.shift();
         if(q.opened.includes(id)||q.done.includes(id))continue;
         const card=document.querySelector(`article.jobTuple[data-job-id="${CSS.escape(id)}"]`);
-        if(!card)continue;
+        if(!card){q.done.push(id);save();count();continue;}
         const url=jobUrl(card,id);
-        if(!url){notify(`Could not build a URL for job ${id}; skipped.`);count();continue;}
+        if(!url){notify(`Could not build a URL for job ${id}; skipped.`);q.done.push(id);save();count();continue;}
         try{
           const tab=GM_openInTab(url,{active:false,insert:true,setParent:true});
           openTabs.set(id,tab);
@@ -82,6 +100,7 @@
           console.info('[Naukri launcher] opened',id,url);
         }catch(error){
           notify(`Tab blocked for job ${id}. Check Tampermonkey permission.`);
+          q.queue.unshift(id);save();
           console.error(error);
         }
         await sleep(OPEN_DELAY_MS);

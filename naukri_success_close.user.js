@@ -7,7 +7,6 @@
   'use strict';
   let handled=false;
   const closeChannel='BroadcastChannel' in window?new BroadcastChannel('codexNaukriTabs'):null;
-  const getQueue=()=>{try{return JSON.parse(localStorage.getItem('codexNaukriQueue')||'{"running":false,"queue":[],"opened":[],"done":[],"batchSize":10}')}catch{return {running:false,queue:[],opened:[],done:[],batchSize:10}}};
   const getJob=()=>{
     const params=new URLSearchParams(location.search);
     const raw=params.get('jobTitle');
@@ -16,16 +15,11 @@
     return {jobTitle:raw||document.title.replace(/\s*[|–-].*$/,''),company,jobId:id,url:location.href,recordedAt:new Date().toISOString()};
   };
   const isOnSite=()=>/apply\s+on\s+(the\s+)?site|company\s+(website|site)|external\s+(website|site)|redirected\s+to.*(website|company)/i.test((document.body?.innerText||'')+' '+document.title);
-  const saveOnSiteJob=()=>{const key='codexNaukriOnSiteJobs';let list=[];try{list=JSON.parse(localStorage.getItem(key)||'[]')}catch{};const job=getJob();if(!list.some(x=>x.jobId&&x.jobId===job.jobId)||!job.jobId)list.push(job);localStorage.setItem(key,JSON.stringify(list));return {job,list};};
-  const downloadList=list=>{
-    const lines=['Naukri Apply-on-Site Jobs','Generated: '+new Date().toLocaleString(),''];
-    list.forEach((x,i)=>lines.push(`${i+1}. ${x.jobTitle||'Untitled'}${x.company?' — '+x.company:''}`,`Job ID: ${x.jobId||'unknown'}`,`URL: ${x.url}`,`Recorded: ${x.recordedAt||''}`,'') );
-    const link=document.createElement('a');link.href=URL.createObjectURL(new Blob([lines.join('\n')],{type:'text/plain;charset=utf-8'}));link.download='naukri-apply-on-site.txt';document.body.append(link);link.click();setTimeout(()=>{URL.revokeObjectURL(link.href);link.remove();},2000);
-  };
+  const saveOnSiteJob=()=>{const key='codexNaukriOnSiteJobs';let list=[];try{list=JSON.parse(localStorage.getItem(key)||'[]')}catch{};const job=getJob();const sig=x=>x.jobId||x.url;if(!list.some(x=>sig(x)&&sig(x)===sig(job)))list.push(job);localStorage.setItem(key,JSON.stringify(list));return {job,list};};
   const isSuccess=()=>{
     const nodes=[...document.querySelectorAll('.applied-job-content,[class*="applied-job"],[class*="apply-success"],[class*="success-message"],[class*="application-success"]')];
-    const body=(nodes.map(n=>n.textContent||'').join(' ')+' '+document.title).replace(/\s+/g,' ').trim();
-    return nodes.length>0 && /\b(applied|application submitted|successfully applied|thank you)\b/i.test(body);
+    const body=(nodes.map(n=>n.textContent||'').join(' ')+' '+document.title+' '+(document.body?.innerText||'')).replace(/\s+/g,' ').trim();
+    return (nodes.length>0&&/\b(applied|application submitted|successfully applied|thank you)\b/i.test(body))||/your application was successful|application was successful for \d+ out of \d+ jobs?|applied for \d+ out of \d+ jobs?/i.test(body);
   };
   const showCloseTimer=(kind='Application submitted')=>{
     const m=location.search.match(/strJobsarr=\[?([^\]&]+)/i);
