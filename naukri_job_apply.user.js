@@ -40,15 +40,27 @@
 
  const notify=m=>{console.warn('[Naukri apply]',m);if(CONFIG.notifyEnabled&&'Notification'in window&&Notification.permission==='granted')try{new Notification('Naukri apply assistant',{body:m});}catch(_){}};
  const EXTERNAL_APPLY_RE=/apply\s+on\s+(the\s+)?(company\s+)?(site|website)|company\s+site|company\s+website|employer\s+(site|website)|external\s+(site|website)/i;
+ const WH_QUESTION_RE=/^(who|what|when|where|why|which|how|whose|whom)\b/i;
  const closeChannel='BroadcastChannel' in window?new BroadcastChannel('codexNaukriTabs'):null;
  const extractJobId=()=>{const m=/(\d+)$/.exec(location.pathname);return m?m[1]:'';};
- const requestClose=()=>{
-   const jobId=extractJobId();
-   const req={type:'close',jobId,nonce:`${jobId||'unknown'}-${Date.now()}-${Math.random()}`};
-   try{closeChannel?.postMessage(req);}catch(_){}
-   try{localStorage.setItem('codexNaukriCloseRequest',JSON.stringify(req));}catch(_){}
-   try{window.open('','_self');window.close();}catch(_){}
- };
+const requestClose=(reason='terminal',retry=false)=>{
+    if(userIntervened)return;
+    const jobId=extractJobId();
+    const req={type:'close',jobId,nonce:`${jobId||'unknown'}-${Date.now()}-${Math.random()}`,reason,retry,url:location.href};
+    try{closeChannel?.postMessage(req);}catch(_){}
+    try{localStorage.setItem('codexNaukriCloseRequest',JSON.stringify(req));}catch(_){}
+    try{localStorage.setItem('codexNaukriLastSkip',JSON.stringify({jobId,reason,retry,url:location.href,at:new Date().toISOString(),page:(document.body?.innerText||'').replace(/\s+/g,' ').slice(0,300)}));}catch(_){}
+    console.warn('[Naukri apply] Closing tab:',reason,retry?'(flagging for retry)':'');
+    try{window.open('','_self');window.close();}catch(_){}
+  };
+  let userIntervened=false;
+  const stopAuto=reason=>{
+    if(userIntervened)return;
+    userIntervened=true;
+    console.warn('[Naukri apply]',reason,'— auto apply stopped, you are in control.');
+  };
+  document.addEventListener('click',e=>{if(e.isTrusted)stopAuto('Manual click detected');},true);
+  document.addEventListener('keydown',e=>{if(e.isTrusted&&e.target&&e.target.matches&&e.target.matches('input,textarea,[contenteditable="true"]'))stopAuto('Manual typing detected');},true);
  const txt=e=>(e?.innerText||e?.textContent||'').replace(/\s+/g,' ').trim();
  const hasAny=(q,words)=>words.some(word=>q.includes(word.toLowerCase()));
  const normalize=q=>q.toLowerCase().replace(/[^a-z0-9 ]/g,' ').replace(/\s+/g,' ').trim();
@@ -68,16 +80,17 @@
  const answer=(q,input)=>{
    q=q.toLowerCase();
 const learned=learnedAnswer(q);
-    if(learned&&!(/^(yes|no)$/i.test(learned.trim())&&hasAny(q,CONFIG.entryPromptKeywords)))return learned;
+    if(learned&&!(/^(yes|no)$/i.test(learned.trim())&&(hasAny(q,CONFIG.entryPromptKeywords)||WH_QUESTION_RE.test(q.trim()))))return learned;
     for(const rule of CONFIG.customAnswers){if(rule.keywords.some(k=>q.includes(k.toLowerCase())))return rule.answer;}
     if(hasAny(q,CONFIG.noticeKeywords))return CONFIG.answers.noticePeriod;
     if(hasAny(q,CONFIG.reviewKeywords))return null;
     if(hasAny(q,CONFIG.experienceKeywords))return hasAny(q,CONFIG.numericOnlyKeywords)||input?.type==='number'||input?.inputMode==='numeric'?CONFIG.answers.experienceNumber:CONFIG.answers.experience;
+    if(WH_QUESTION_RE.test(q.trim()))return null;
     if((hasAny(q,CONFIG.yesNoKeywords)||/\b(yes|no)\b/.test(q))&&!hasAny(q,CONFIG.entryPromptKeywords))return CONFIG.answers.yesNo;
     return null;
  };
  const isVisible=e=>{const s=getComputedStyle(e);return s.display!=='none'&&s.visibility!=='hidden'&&e.getClientRects().length>0&&!e.disabled;};
- const visibleInput=()=>{const drawer=[...document.querySelectorAll('.chatbot_Drawer,[class*="chatbot_Drawer"],[class*="chatbot"]')].find(isVisible);if(!drawer)return null;const text=[...drawer.querySelectorAll('.chatbot_InputContainer [contenteditable="true"],.chatbot_InputContainer textarea,.chatbot_InputContainer input[type="text"],.chatbot_InputContainer input[type="number"],[contenteditable="true"],textarea,input[type="text"],input[type="number"]')].find(isVisible);return text||[...drawer.querySelectorAll('.chatbot_InputContainer input[type="radio"],input[type="radio"]')].find(isVisible);};
+ const visibleInput=()=>{const drawer=[...document.querySelectorAll('.chatbot_Drawer,[class*="chatbot_Drawer"],[class*="chatbot"]')].find(isVisible);if(!drawer)return null;const text=[...drawer.querySelectorAll('.chatbot_InputContainer [contenteditable="true"],.chatbot_InputContainer textarea,.chatbot_InputContainer input[type="text"],.chatbot_InputContainer input[type="number"],.chatbot_InputContainer input:not([type]),[contenteditable="true"],textarea,input[type="text"],input[type="number"],input[type="email"],input[type="tel"],input:not([type])')].find(isVisible);return text||[...drawer.querySelectorAll('.chatbot_InputContainer input[type="radio"],input[type="radio"]')].find(isVisible);};
  const radioOptions=input=>{const scope=input.closest('.chatbot_Drawer,fieldset,form')||document;return [...scope.querySelectorAll('input[type="radio"]')].filter(e=>{const s=getComputedStyle(e);return s.display!=='none'&&s.visibility!=='hidden'&&e.getClientRects().length>0&&!e.disabled;});};
  const radioLabel=radio=>{const label=radio.closest('label')||document.querySelector(`label[for="${CSS.escape(radio.id||'__missing__')}"]`);return txt(label)||radio.getAttribute('aria-label')||radio.value||'';};
  const isIntro=q=>/thank you for showing interest|kindly answer all|successfully apply|answer all the recruiter/i.test(q);
@@ -95,48 +108,70 @@ const learned=learnedAnswer(q);
  const fill=(input,value)=>{input.focus();if(input.type==='radio'){const wanted=String(value).toLowerCase().trim();const option=radioOptions(input).find(r=>radioLabel(r).toLowerCase().trim()===wanted||radioLabel(r).toLowerCase().includes(wanted)||wanted.includes(radioLabel(r).toLowerCase().trim()));if(option){option.click();option.dispatchEvent(new Event('change',{bubbles:true}));}return;}if(input.matches('[contenteditable="true"]')){input.textContent='';document.execCommand('insertText',false,value);input.dispatchEvent(new InputEvent('beforeinput',{bubbles:true,cancelable:true,inputType:'insertText',data:value}));input.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:value}));}else{const proto=input instanceof HTMLTextAreaElement?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;const setter=Object.getOwnPropertyDescriptor(proto,'value')?.set;input.dispatchEvent(new KeyboardEvent('keydown',{bubbles:true,key:'Backspace',code:'Backspace'}));if(setter)setter.call(input,'');else input.value='';let inserted=false;try{if(input.setRangeText&&input.type!=='number'){input.setRangeText(String(value),0,0,'end');inserted=true;}}catch(_){}if(!inserted){if(setter)setter.call(input,String(value));else input.value=String(value);}input.dispatchEvent(new InputEvent('beforeinput',{bubbles:true,cancelable:true,inputType:'insertText',data:String(value)}));input.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:String(value)}));for(const ch of String(value)){input.dispatchEvent(new KeyboardEvent('keydown',{bubbles:true,key:ch}));input.dispatchEvent(new KeyboardEvent('keypress',{bubbles:true,key:ch}));input.dispatchEvent(new KeyboardEvent('keyup',{bubbles:true,key:ch}));}input.dispatchEvent(new Event('change',{bubbles:true}));input.dispatchEvent(new KeyboardEvent('keyup',{bubbles:true,key:'End',code:'End'}));}input.dispatchEvent(new Event('blur',{bubbles:true}));input.focus();};
  const nudgeInput=input=>{if(!input)return;input.focus();input.dispatchEvent(new Event('input',{bubbles:true}));input.dispatchEvent(new Event('change',{bubbles:true}));};
  const chatValue=input=>{if(input.type==='radio'){const checked=radioOptions(input).find(r=>r.checked);return checked?radioLabel(checked).trim():'';}return input.matches('[contenteditable="true"]')?(input.textContent||'').trim():(input.value||'').trim();};
- const findSaveCandidate=()=>[...document.querySelectorAll('.sendMsg,button,a,[role="button"]')].find(e=>/^(save|save\s*&\s*next|next|continue|submit)$/i.test(txt(e)));
+ const findSaveCandidate=()=>{const roots=[...document.querySelectorAll('.chatbot_Drawer,[class*="chatbot_Drawer"],[class*="chatbot"],.sendMsg')];const scope=roots.find(isVisible)||document;return [...scope.querySelectorAll('.sendMsg,button,a,[role="button"]')].find(e=>/^(save|save\s*&\s*next|next|continue|submit|send)$/i.test(txt(e)));};
  const findSave=()=>{const e=findSaveCandidate();return e&&!e.disabled&&!e.closest('.disabled')?e:null;};
  const findApply=()=>[...document.querySelectorAll('button,a,[role="button"]')].find(e=>isVisible(e)&&/^apply(?:\s|$)/i.test(txt(e))&&!/^applied\b/i.test(txt(e))&&!EXTERNAL_APPLY_RE.test(txt(e)));
  const appliedConfirmation=()=>{
-   const selectors='.applied-job-content,[class*="applied-job"],[class*="apply-success"],[class*="success-message"],[class*="application-success"]';
+   const selectors='.applied-job-content,[class*="applied-job"]';
    const marked=[...document.querySelectorAll(selectors)].map(txt).join(' ');
    const body=(marked+' '+document.title+' '+document.body.innerText).replace(/\s+/g,' ');
-   return /myapply\/saveApply/i.test(location.href)||/application submitted|successfully applied|applied successfully|you have applied|thank you for applying|application received|applied to/i.test(body);
+   return /myapply\/saveApply/i.test(location.href)||/application submitted|successfully applied|applied successfully|you have applied|thank you for applying|application received|applied to|your application was successful|application was successful for \d+ out of \d+ jobs?|applied for \d+ out of \d+ jobs?/i.test(body);
  };
-async function run(){
+async function tryAnswer(input,a){
+    for(let attempt=0;attempt<3&&!userIntervened;attempt++){
+      input=visibleInput()||input;
+      fill(input,a);
+      await new Promise(r=>setTimeout(r,CONFIG.delayAfterFillMs));
+      input=visibleInput()||input;
+      nudgeInput(input);
+      let save=null;
+      for(let wait=0;wait<20&&!save;wait++){
+        await new Promise(r=>setTimeout(r,250));
+        if(wait===6||wait===12)nudgeInput(input);
+        save=findSave();
+      }
+      if(userIntervened)return false;
+      if(chatValue(input)&&save&&save.getClientRects().length){save.click();return true;}
+      await new Promise(r=>setTimeout(r,500));
+    }
+    return false;
+  }
+  async function run(){
     await new Promise(r=>setTimeout(r,CONFIG.delayBeforeApplyMs));
-    if(appliedConfirmation()){requestClose();return;}
- let apply=null;for(let wait=0;wait<30&&!apply;wait++){apply=findApply();if(!apply)await new Promise(r=>setTimeout(r,500));}
-    if(!apply){requestClose();return;}
+    if(userIntervened)return;
+ let apply=null;for(let wait=0;wait<30&&!apply&&!userIntervened;wait++){apply=findApply();if(!apply)await new Promise(r=>setTimeout(r,500));}
+    if(userIntervened)return;
+    if(!apply){const applied=appliedConfirmation();requestClose(applied?'already-applied-no-button':'no-apply-button-after-wait',!applied);return;}
     apply.scrollIntoView({block:'center'});apply.click();
-   for(let i=0;i<CONFIG.maxQuestions;i++){
+   for(let i=0;i<CONFIG.maxQuestions&&!userIntervened;i++){
      await new Promise(r=>setTimeout(r,CONFIG.delayBetweenQuestionsMs));
-     let input=null;for(let wait=0;wait<20&&!input;wait++){input=visibleInput();if(!input)await new Promise(r=>setTimeout(r,400));}
+     if(userIntervened)return;
+     let input=null;for(let wait=0;wait<20&&!input&&!userIntervened;wait++){input=visibleInput();if(!input)await new Promise(r=>setTimeout(r,400));}
+     if(userIntervened)return;
      if(!input)break;
      let q='';
-     for(let wait=0;wait<20&&!q;wait++){q=questionText(input);if(!q)await new Promise(r=>setTimeout(r,400));}
-     if(!q){notify('Recruiter question was not readable; job skipped.');requestClose();return;}
+     for(let wait=0;wait<20&&!q&&!userIntervened;wait++){q=questionText(input);if(!q)await new Promise(r=>setTimeout(r,400));}
+     if(userIntervened)return;
+     if(!q){notify('Recruiter question was not readable; job will be retried.');requestClose('question-unreadable',true);return;}
      let a=answer(q,input);
      if(!a){
-       if(!CONFIG.askForUnknownAnswer){notify(`New or sensitive recruiter question needs an answer; job skipped: ${q}`);requestClose();return;}
+       if(!CONFIG.askForUnknownAnswer){notify(`New or sensitive recruiter question needs an answer; job skipped: ${q}`);requestClose('sensitive-unknown-question');return;}
        const typed=window.prompt(`New recruiter question:\n\n${q}\n\nEnter the answer to use:`,'');
+       if(userIntervened)return;
        if(!typed?.trim()){notify('Application paused for manual review.');return;}
-a=typed.trim();
-        if(CONFIG.learnNewAnswers)await remember(q,a);
+       a=typed.trim();
+       if(CONFIG.learnNewAnswers)await remember(q,a);
      }
-     fill(input,a);
-      await new Promise(r=>setTimeout(r,CONFIG.delayAfterFillMs));
-      nudgeInput(input);
-      let save=null;for(let wait=0;wait<15&&!save;wait++){await new Promise(r=>setTimeout(r,250));save=findSave();}
-     if(!chatValue(input)){notify('Answer was not registered by Naukri; job skipped.');requestClose();return;}
-     if(!save||!save.getClientRects().length){notify('Application is stuck at a question; job skipped.');requestClose();return;}
-     save.click();
+     const savedAnswer=await tryAnswer(input,a);
+     if(userIntervened)return;
+     if(!savedAnswer){notify('Answer could not be registered; job will be retried.');requestClose('answer-not-registered',true);return;}
    }
+   if(userIntervened)return;
    let confirmed=false;
-   for(let wait=0;wait<20&&!confirmed;wait++){await new Promise(r=>setTimeout(r,500));confirmed=appliedConfirmation();}
-if(confirmed)notify('Application submitted successfully.');
-    else{notify('Application flow completed; Naukri did not expose a confirmation yet.');requestClose();}
+   for(let wait=0;wait<20&&!confirmed&&!userIntervened;wait++){await new Promise(r=>setTimeout(r,500));confirmed=appliedConfirmation();}
+   if(userIntervened)return;
+ if(confirmed)notify('Application submitted successfully.');
+    else{notify('Application flow completed; Naukri did not expose a confirmation yet.');requestClose('no-confirmation-at-flow-end');}
   }
  window.naukriAnswerStore={list:()=>Object.values(storedRules),remove:q=>{const key=normalize(q);delete storedRules[key];persistRules();},clear:async()=>{storedRules={};await persistRules();}};
  loadRules().then(run);

@@ -8,6 +8,10 @@
   const q=JSON.parse(localStorage.getItem(KEY)||'{"running":false,"queue":[],"opened":[],"done":[],"batchSize":10}');
   q.batchSize=100;
   const OPEN_DELAY_MS=3000;
+  const RETRY_MAX=2;
+  const RETRY_KEY='codexNaukriRetries';
+  const readRetries=()=>{try{return JSON.parse(localStorage.getItem(RETRY_KEY)||'{}')}catch{return{}}};
+  const writeRetries=v=>{try{localStorage.setItem(RETRY_KEY,JSON.stringify(v))}catch{}};
   const EXTERNAL_CARD_RE=/apply\s+on\s+(the\s+)?(company\s+)?(site|website)|company\s+(site|website)|employer\s+(site|website)/i;
   let pumping=false;
   const openTabs=new Map();
@@ -19,7 +23,16 @@
   const onSiteList=()=>{try{return JSON.parse(localStorage.getItem('codexNaukriOnSiteJobs')||'[]')}catch{return[]}};
   function downloadOnSiteList(){const list=onSiteList();if(!list.length)return;const lines=['Naukri Apply-on-Site Jobs','Generated: '+new Date().toLocaleString(),''];list.forEach((x,i)=>lines.push(`${i+1}. ${x.jobTitle||'Untitled'}${x.company?' — '+x.company:''}`,`Job ID: ${x.jobId||'unknown'}`,`URL: ${x.url||''}`,`Recorded: ${x.recordedAt||''}`,'') );const link=document.createElement('a');link.href=URL.createObjectURL(new Blob([lines.join('\n')],{type:'text/plain;charset=utf-8'}));link.download='naukri-apply-on-site.txt';document.body.append(link);link.click();setTimeout(()=>{URL.revokeObjectURL(link.href);link.remove();},2000);}
   function scheduleExport(){clearTimeout(exportTimer);exportTimer=setTimeout(()=>{const active=q.opened.filter(id=>!q.done.includes(id)).length;if(active===0&&!q.queue.length)downloadOnSiteList();},1800);}
-  function handleClose(data){if(!data?.jobId||data.type!=='close'||processedClose.has(data.nonce))return;processedClose.add(data.nonce);const tab=openTabs.get(data.jobId);try{if(typeof tab?.close==='function')tab.close();else console.warn('[Naukri launcher] no close handle for',data.jobId)}catch(error){console.warn('[Naukri launcher] tab close failed',error)}openTabs.delete(data.jobId);if(!q.done.includes(data.jobId))q.done.push(data.jobId);save();count();scheduleExport();}
+  function handleClose(data){if(!data?.jobId||data.type!=='close'||processedClose.has(data.nonce))return;processedClose.add(data.nonce);const tab=openTabs.get(data.jobId);try{if(typeof tab?.close==='function')tab.close();else console.warn('[Naukri launcher] no close handle for',data.jobId)}catch(error){console.warn('[Naukri launcher] tab close failed',error)}openTabs.delete(data.jobId);save();
+  if(data.retry===true){
+    const retries=readRetries();const count=retries[data.jobId]||0;
+    if(count>=RETRY_MAX){delete retries[data.jobId];writeRetries(retries);if(!q.done.includes(data.jobId))q.done.push(data.jobId);console.warn('[Naukri launcher]',data.jobId,'retried',count,'times; skipping. Reason:',data.reason);}
+    else{retries[data.jobId]=count+1;writeRetries(retries);q.queue.unshift(data.jobId);console.warn('[Naukri launcher] requeued',data.jobId,'(retry',count+1+') Reason:',data.reason);}
+  }else{
+    if(!q.done.includes(data.jobId))q.done.push(data.jobId);
+    console.warn('[Naukri launcher] done',data.jobId,'Reason:',data.reason||'applied');
+  }
+  save();count();scheduleExport();}
   closeChannel?.addEventListener('message',event=>handleClose(event.data));
   window.addEventListener('storage',event=>{if(event.key!=='codexNaukriCloseRequest'||!event.newValue)return;try{handleClose(JSON.parse(event.newValue))}catch(error){console.warn('[Naukri launcher] close request parse failed',error)}});
   function notify(message){

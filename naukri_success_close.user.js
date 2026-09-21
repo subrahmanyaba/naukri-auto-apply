@@ -18,8 +18,8 @@
   const saveOnSiteJob=()=>{const key='codexNaukriOnSiteJobs';let list=[];try{list=JSON.parse(localStorage.getItem(key)||'[]')}catch{};const job=getJob();const sig=x=>x.jobId||x.url;if(!list.some(x=>sig(x)&&sig(x)===sig(job)))list.push(job);localStorage.setItem(key,JSON.stringify(list));return {job,list};};
   const isSuccess=()=>{
     const nodes=[...document.querySelectorAll('.applied-job-content,[class*="applied-job"],[class*="apply-success"],[class*="success-message"],[class*="application-success"]')];
-    const body=(nodes.map(n=>n.textContent||'').join(' ')+' '+document.title).replace(/\s+/g,' ').trim();
-    return nodes.length>0 && /\b(applied|application submitted|successfully applied|thank you)\b/i.test(body);
+    const body=(nodes.map(n=>n.textContent||'').join(' ')+' '+document.title+' '+(document.body?.innerText||'')).replace(/\s+/g,' ').trim();
+    return (nodes.length>0&&/\b(applied|application submitted|successfully applied|thank you)\b/i.test(body))||/your application was successful|application was successful for \d+ out of \d+ jobs?|applied for \d+ out of \d+ jobs?/i.test(body);
   };
   const showCloseTimer=(kind='Application submitted')=>{
     const m=location.search.match(/strJobsarr=\[?([^\]&]+)/i);
