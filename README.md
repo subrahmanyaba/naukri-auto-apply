@@ -6,8 +6,8 @@ Three Tampermonkey userscripts for assisted job-application workflows on Naukri.
 
 ## Included scripts
 
-- naukri_home_launcher.user.js — reads job cards from the Recommended Jobs page, queues them, opens job pages in background tabs, enforces a maximum active batch of 100, and closes tabs when the success script signals completion.
-- naukri_job_apply.user.js — runs on individual Naukri job pages, presses Apply, handles common text, number, contenteditable, and radio-button questions, and uses configurable answers.
+- naukri_home_launcher.user.js — reads job cards from the Recommended Jobs page, queues them, and opens **one job at a time**. The next job opens only after the previous tab finishes, followed by a random pause. It also takes longer breaks, enforces a daily limit, and closes tabs when a job is done.
+- naukri_job_apply.user.js — runs on individual Naukri job pages, scrolls through the description for a few seconds, presses Apply, types answers character by character with random delays, and handles common text, number, contenteditable, and radio-button questions using configurable answers.
 - naukri_success_close.user.js — runs on Naukri result pages, shows a five-second close timer, requests the launcher to close the tab, and records Apply on site jobs.
 
 ## The three Naukri application flows
@@ -64,7 +64,22 @@ Add reusable rules to customAnswers. Questions that are not recognized can be an
 4. Start larger batches only after a successful single-job test.
 5. Keep the browser visible enough to notice manual-review notifications.
 
-The launcher currently sets the active batch maximum to 100. This is deliberately configurable in the source; smaller batches are safer for testing and easier to monitor.
+## Human-like pacing
+
+Naukri rejects applications that arrive in parallel, so the launcher never runs two jobs at once. Edit the `PACING` block at the top of naukri_home_launcher.user.js to change these defaults:
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| gapBetweenJobsMs | 25–60 s | Random pause after one job finishes, before the next opens |
+| breakEveryJobs / breakLengthMs | every 8–12 jobs, 3–7 min | Longer break now and then |
+| dailyLimit | 50 | Queue stops after this many jobs per day (0 = no limit) |
+| jobTimeoutMs | 6 min | A tab that never reports back is closed and retried |
+| manualTimeoutMs | 30 min | How long the queue waits when a job needs you |
+| openInForeground | true | Job tab opens in front, like a person clicking it |
+
+The job-page script has matching `[min,max]` ranges in its CONFIG (readJobMs, thinkBeforeAnswerMs, typeCharMs, afterTypeMs, beforeClickMs).
+
+When a job needs you (an unknown question prompt, you clicked or typed in the page, or you pressed "Keep open"), the launcher shows WAITING FOR YOU and holds the queue. Close that tab when you're done and the queue continues.
 
 ## Apply on site list
 
