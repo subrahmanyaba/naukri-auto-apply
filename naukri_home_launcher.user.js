@@ -95,7 +95,9 @@
     processed.add(data.nonce);
     if(data.type==='close')finishJob(data.jobId,{retry:data.retry===true,reason:data.reason||'applied'});
     else if(data.type==='status'&&q.inflight?.id===data.jobId){
-      q.inflight.manual=data.state==='manual';save();count();
+      q.inflight.manual=data.state==='manual';
+      q.inflight.openedAt=Date.now(); // restart the timeout clock after each hand-over
+      save();count();
       if(q.inflight.manual)notify(`Job ${data.jobId} needs you — queue is waiting. Close that tab when you're done.`);
     }
   }

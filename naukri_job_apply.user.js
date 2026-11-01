@@ -67,15 +67,57 @@ const requestClose=(reason='terminal',retry=false)=>{
     console.warn('[Naukri apply] Closing tab:',reason,retry?'(flagging for retry)':'');
     try{window.open('','_self');window.close();}catch(_){}
   };
+  // userIntervened = you took over the whole job; the script does nothing more.
+  // manualPause    = you are answering the current question yourself; the script
+  //                  waits, learns your answer, then carries on with the next one.
   let userIntervened=false;
+  let manualPause=null; // {question,answer}
+  let inQuestions=false;
+  const halted=()=>userIntervened||!!manualPause;
   const stopAuto=reason=>{
     if(userIntervened)return;
-    userIntervened=true;
-    postStatus('manual');
+    userIntervened=true;manualPause=null;
+    postStatus('manual');setBox('Stopped — you are in control of this job.');
     console.warn('[Naukri apply]',reason,'— auto apply stopped, you are in control.');
   };
-  document.addEventListener('click',e=>{if(e.isTrusted)stopAuto('Manual click detected');},true);
-  document.addEventListener('keydown',e=>{if(e.isTrusted&&e.target&&e.target.matches&&e.target.matches('input,textarea,[contenteditable="true"]'))stopAuto('Manual typing detected');},true);
+  const pauseForUser=reason=>{
+    if(userIntervened||manualPause)return;
+    const input=visibleInput();
+    manualPause={question:input?questionText(input):'',answer:''};
+    postStatus('manual');setBox('Waiting for you to answer this question…',true);
+    console.warn('[Naukri apply]',reason,'— waiting for you to answer:',manualPause.question);
+  };
+  const onUserAction=(e,reason)=>{
+    if(!e.isTrusted||e.target?.closest?.('#codex-apply-box'))return;
+    if(inQuestions)pauseForUser(reason);else stopAuto(reason);
+  };
+  // Remember what you answered so the same question is filled automatically next time.
+  const captureManualAnswer=target=>{
+    if(!manualPause||!target)return;
+    const radio=target.closest?.('label')?.querySelector('input[type="radio"]')||(target.matches?.('input[type="radio"]')?target:null);
+    if(radio){manualPause.answer=radioLabel(radio).trim();return;}
+    const input=visibleInput();
+    if(input){const v=chatValue(input);if(v)manualPause.answer=v;}
+  };
+  document.addEventListener('click',e=>{onUserAction(e,'Manual click detected');if(e.isTrusted)captureManualAnswer(e.target);},true);
+  document.addEventListener('keydown',e=>{if(e.target?.matches?.('input,textarea,[contenteditable="true"]'))onUserAction(e,'Manual typing detected');if(e.isTrusted&&e.key==='Enter')captureManualAnswer(e.target);},true);
+  document.addEventListener('input',e=>{if(e.isTrusted)captureManualAnswer(e.target);},true);
+  // Small status box with Resume / Stop, so an accidental click doesn't strand the job.
+  let box=null;
+  function setBox(message,showResume=false){
+    if(!document.body)return;
+    if(!box){
+      box=document.createElement('div');box.id='codex-apply-box';
+      Object.assign(box.style,{position:'fixed',left:'16px',bottom:'16px',zIndex:2147483647,background:'#17202a',color:'#fff',padding:'10px',borderRadius:'8px',font:'12px Arial',maxWidth:'320px'});
+      box.innerHTML='<b>Naukri auto apply</b><br><span></span><br><button data-a="resume">Resume</button> <button data-a="stop">Stop for this job</button>';
+      box.querySelector('[data-a="resume"]').onclick=()=>{manualPause=null;postStatus('working');setBox('Running');};
+      box.querySelector('[data-a="stop"]').onclick=()=>stopAuto('Stopped from panel');
+      document.body.append(box);
+    }
+    box.querySelector('span').textContent=message;
+    box.querySelector('[data-a="resume"]').style.display=showResume?'':'none';
+    box.querySelector('[data-a="stop"]').style.display=userIntervened?'none':'';
+  }
  const txt=e=>(e?.innerText||e?.textContent||'').replace(/\s+/g,' ').trim();
  const hasAny=(q,words)=>words.some(word=>q.includes(word.toLowerCase()));
  const normalize=q=>q.toLowerCase().replace(/[^a-z0-9 ]/g,' ').replace(/\s+/g,' ').trim();
@@ -134,7 +176,7 @@ const learned=learnedAnswer(q);
    if(input.matches('[contenteditable="true"]')){
      input.textContent='';
      for(const ch of str){
-       if(userIntervened)return;
+       if(halted())return;
        key('keydown',ch);document.execCommand('insertText',false,ch);key('keyup',ch);
        await pause(CONFIG.typeCharMs);
      }
@@ -147,11 +189,12 @@ const learned=learnedAnswer(q);
      // Number inputs reject partial values like "3.", so they get the whole value at once.
      if(input.type==='number'){
        for(const ch of str){key('keydown',ch);key('keyup',ch);await pause(CONFIG.typeCharMs);}
+       if(halted())return;
        set(str);input.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:str}));
      }else{
        let typed='';
        for(const ch of str){
-         if(userIntervened)return;
+         if(halted())return;
          typed+=ch;
          key('keydown',ch);key('keypress',ch);
          set(typed);
@@ -175,12 +218,37 @@ const learned=learnedAnswer(q);
    const body=(marked+' '+document.title+' '+document.body.innerText).replace(/\s+/g,' ');
    return /myapply\/saveApply/i.test(location.href)||/application submitted|successfully applied|applied successfully|you have applied|thank you for applying|application received|applied to|your application was successful|application was successful for \d+ out of \d+ jobs?|applied for \d+ out of \d+ jobs?/i.test(body);
  };
+ // While you answer a question yourself, wait until Naukri moves to the next
+ // question (or the chat closes), save your answer for next time, then resume.
+ // Returns the question that is now done, so it isn't read again.
+ async function waitWhilePaused(lastAnswered){
+   if(!manualPause)return lastAnswered;
+   const p=manualPause;
+   notify(`Waiting for you to answer: ${p.question||'the current question'}`);
+   while(manualPause===p&&!userIntervened){
+     await sleep(800);
+     const input=visibleInput();
+     if(!input)break;
+     const q=questionText(input);
+     if(!p.question){if(q)p.question=q;continue;}
+     if(q&&normalize(q)!==normalize(p.question))break;
+   }
+   const answeredByYou=manualPause===p;
+   if(answeredByYou&&p.question&&p.answer&&CONFIG.learnNewAnswers){
+     await remember(p.question,p.answer);
+     console.info('[Naukri apply] learned your answer:',p.question,'→',p.answer);
+   }
+   if(manualPause===p)manualPause=null;
+   if(!userIntervened){postStatus('working');setBox('Running');}
+   return answeredByYou?(p.question||lastAnswered):lastAnswered;
+ }
 async function tryAnswer(input,a){
-    for(let attempt=0;attempt<3&&!userIntervened;attempt++){
+    for(let attempt=0;attempt<3&&!halted();attempt++){
       input=visibleInput()||input;
       await fill(input,a);
-      if(userIntervened)return false;
+      if(halted())return false;
       await pause(CONFIG.afterTypeMs);
+      if(halted())return false;
       input=visibleInput()||input;
       nudgeInput(input);
       let save=null;
@@ -189,8 +257,8 @@ async function tryAnswer(input,a){
         if(wait===6||wait===12)nudgeInput(input);
         save=findSave();
       }
-      if(userIntervened)return false;
-      if(chatValue(input)&&save&&save.getClientRects().length){await pause(CONFIG.beforeClickMs);if(userIntervened)return false;save.click();return true;}
+      if(halted())return false;
+      if(chatValue(input)&&save&&save.getClientRects().length){await pause(CONFIG.beforeClickMs);if(halted())return false;save.click();return true;}
       await new Promise(r=>setTimeout(r,500));
     }
     return false;
@@ -215,30 +283,48 @@ async function tryAnswer(input,a){
     await pause([800,1800]);
     if(userIntervened)return;
     apply.click();
+    inQuestions=true;
+    setBox('Running');
+   let lastAnswered='';
    for(let i=0;i<CONFIG.maxQuestions&&!userIntervened;i++){
-     await pause(CONFIG.thinkBeforeAnswerMs);
+     lastAnswered=await waitWhilePaused(lastAnswered);
      if(userIntervened)return;
+     await pause(CONFIG.thinkBeforeAnswerMs);
+     if(halted()){i--;continue;}
      let input=null;for(let wait=0;wait<20&&!input&&!userIntervened;wait++){input=visibleInput();if(!input)await new Promise(r=>setTimeout(r,400));}
      if(userIntervened)return;
      if(!input)break;
+     // Wait for the next question to appear instead of re-reading the one just answered.
      let q='';
-     for(let wait=0;wait<20&&!q&&!userIntervened;wait++){q=questionText(input);if(!q)await new Promise(r=>setTimeout(r,400));}
+     for(let wait=0;wait<20&&!q&&!userIntervened;wait++){
+       q=questionText(input);
+       if(q&&lastAnswered&&normalize(q)===normalize(lastAnswered)&&wait<19)q='';
+       if(!q){await new Promise(r=>setTimeout(r,400));input=visibleInput()||input;}
+     }
      if(userIntervened)return;
+     if(manualPause){i--;continue;}
      if(!q){notify('Recruiter question was not readable; job will be retried.');requestClose('question-unreadable',true);return;}
      let a=answer(q,input);
      if(!a){
        if(!CONFIG.askForUnknownAnswer){notify(`New or sensitive recruiter question needs an answer; job skipped: ${q}`);requestClose('sensitive-unknown-question');return;}
        postStatus('manual');
-       const typed=window.prompt(`New recruiter question:\n\n${q}\n\nEnter the answer to use:`,'');
+       const typed=window.prompt(`New recruiter question:\n\n${q}\n\nEnter the answer to use (or Cancel to answer it yourself in the chat — it will be remembered):`,'');
        if(userIntervened)return;
-       if(!typed?.trim()){notify('Application paused for manual review.');return;}
+       if(!typed?.trim()){
+         // Let you answer in the chat; learn it, then keep going with the next questions.
+         manualPause={question:q,answer:''};
+         setBox('Answer this question in the chat. I will remember it and continue.',true);
+         i--;continue;
+       }
        postStatus('working');
        a=typed.trim();
        if(CONFIG.learnNewAnswers)await remember(q,a);
      }
      const savedAnswer=await tryAnswer(input,a);
      if(userIntervened)return;
+     if(manualPause){i--;continue;}
      if(!savedAnswer){notify('Answer could not be registered; job will be retried.');requestClose('answer-not-registered',true);return;}
+     lastAnswered=q;
    }
    if(userIntervened)return;
    let confirmed=false;
