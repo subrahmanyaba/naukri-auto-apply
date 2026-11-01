@@ -8,9 +8,13 @@
 
  // ===================== EDIT THIS SECTION =====================
  const CONFIG={
-   delayBeforeApplyMs:1500,
-   delayBetweenQuestionsMs:800,
-   delayAfterFillMs:800,
+   // Timings are [min,max] ranges in ms; a random value is picked each time so
+   // the pace looks like a person, not a fixed-interval robot.
+   readJobMs:[5000,12000],          // time spent "reading" the job description before Apply
+   thinkBeforeAnswerMs:[1500,4500], // pause after a recruiter question appears
+   typeCharMs:[60,180],             // delay between typed characters
+   afterTypeMs:[600,1500],          // pause after typing, before pressing Save/Next
+   beforeClickMs:[300,900],         // short hesitation before any click
    notifyEnabled:false,
    maxQuestions:30,
      learnNewAnswers:true,
@@ -43,6 +47,16 @@
  const WH_QUESTION_RE=/^(who|what|when|where|why|which|how|whose|whom)\b/i;
  const closeChannel='BroadcastChannel' in window?new BroadcastChannel('codexNaukriTabs'):null;
  const extractJobId=()=>{const m=/(\d+)$/.exec(location.pathname);return m?m[1]:'';};
+ const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+ const rand=([min,max])=>Math.round(min+Math.random()*(max-min));
+ const pause=range=>sleep(rand(range));
+ // Tell the launcher this job is waiting for the user, so it holds the queue.
+ const postStatus=state=>{
+   const jobId=extractJobId();
+   const msg={type:'status',state,jobId,nonce:`${jobId||'unknown'}-${state}-${Date.now()}-${Math.random()}`};
+   try{closeChannel?.postMessage(msg);}catch(_){}
+   try{localStorage.setItem('codexNaukriStatus',JSON.stringify(msg));}catch(_){}
+ };
 const requestClose=(reason='terminal',retry=false)=>{
     if(userIntervened)return;
     const jobId=extractJobId();
@@ -57,6 +71,7 @@ const requestClose=(reason='terminal',retry=false)=>{
   const stopAuto=reason=>{
     if(userIntervened)return;
     userIntervened=true;
+    postStatus('manual');
     console.warn('[Naukri apply]',reason,'— auto apply stopped, you are in control.');
   };
   document.addEventListener('click',e=>{if(e.isTrusted)stopAuto('Manual click detected');},true);
@@ -105,7 +120,50 @@ const learned=learnedAnswer(q);
    const nearby=txt(input.parentElement)||txt(input.closest('form'))||'';
    return [...linked,input.getAttribute('aria-label')||'',input.getAttribute('placeholder')||'',nearby].find(q=>q&&!isIntro(q)&&(/[?]/.test(q)||hasAny(q,CONFIG.experienceKeywords)))||'';
  };
- const fill=(input,value)=>{input.focus();if(input.type==='radio'){const wanted=String(value).toLowerCase().trim();const option=radioOptions(input).find(r=>radioLabel(r).toLowerCase().trim()===wanted||radioLabel(r).toLowerCase().includes(wanted)||wanted.includes(radioLabel(r).toLowerCase().trim()));if(option){option.click();option.dispatchEvent(new Event('change',{bubbles:true}));}return;}if(input.matches('[contenteditable="true"]')){input.textContent='';document.execCommand('insertText',false,value);input.dispatchEvent(new InputEvent('beforeinput',{bubbles:true,cancelable:true,inputType:'insertText',data:value}));input.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:value}));}else{const proto=input instanceof HTMLTextAreaElement?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;const setter=Object.getOwnPropertyDescriptor(proto,'value')?.set;input.dispatchEvent(new KeyboardEvent('keydown',{bubbles:true,key:'Backspace',code:'Backspace'}));if(setter)setter.call(input,'');else input.value='';let inserted=false;try{if(input.setRangeText&&input.type!=='number'){input.setRangeText(String(value),0,0,'end');inserted=true;}}catch(_){}if(!inserted){if(setter)setter.call(input,String(value));else input.value=String(value);}input.dispatchEvent(new InputEvent('beforeinput',{bubbles:true,cancelable:true,inputType:'insertText',data:String(value)}));input.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:String(value)}));for(const ch of String(value)){input.dispatchEvent(new KeyboardEvent('keydown',{bubbles:true,key:ch}));input.dispatchEvent(new KeyboardEvent('keypress',{bubbles:true,key:ch}));input.dispatchEvent(new KeyboardEvent('keyup',{bubbles:true,key:ch}));}input.dispatchEvent(new Event('change',{bubbles:true}));input.dispatchEvent(new KeyboardEvent('keyup',{bubbles:true,key:'End',code:'End'}));}input.dispatchEvent(new Event('blur',{bubbles:true}));input.focus();};
+ // Types the answer one character at a time with random gaps, like a person.
+ const fill=async(input,value)=>{
+   const str=String(value);
+   input.focus();
+   if(input.type==='radio'){
+     const wanted=str.toLowerCase().trim();
+     const option=radioOptions(input).find(r=>radioLabel(r).toLowerCase().trim()===wanted||radioLabel(r).toLowerCase().includes(wanted)||wanted.includes(radioLabel(r).toLowerCase().trim()));
+     if(option){await pause(CONFIG.beforeClickMs);option.click();option.dispatchEvent(new Event('change',{bubbles:true}));}
+     return;
+   }
+   const key=(type,ch)=>input.dispatchEvent(new KeyboardEvent(type,{bubbles:true,key:ch}));
+   if(input.matches('[contenteditable="true"]')){
+     input.textContent='';
+     for(const ch of str){
+       if(userIntervened)return;
+       key('keydown',ch);document.execCommand('insertText',false,ch);key('keyup',ch);
+       await pause(CONFIG.typeCharMs);
+     }
+     input.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:str}));
+   }else{
+     const proto=input instanceof HTMLTextAreaElement?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;
+     const setter=Object.getOwnPropertyDescriptor(proto,'value')?.set;
+     const set=v=>{if(setter)setter.call(input,v);else input.value=v;};
+     key('keydown','Backspace');set('');input.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'deleteContentBackward'}));
+     // Number inputs reject partial values like "3.", so they get the whole value at once.
+     if(input.type==='number'){
+       for(const ch of str){key('keydown',ch);key('keyup',ch);await pause(CONFIG.typeCharMs);}
+       set(str);input.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:str}));
+     }else{
+       let typed='';
+       for(const ch of str){
+         if(userIntervened)return;
+         typed+=ch;
+         key('keydown',ch);key('keypress',ch);
+         set(typed);
+         input.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:ch}));
+         key('keyup',ch);
+         await pause(CONFIG.typeCharMs);
+       }
+     }
+     input.dispatchEvent(new Event('change',{bubbles:true}));
+   }
+   input.dispatchEvent(new Event('blur',{bubbles:true}));input.focus();
+ };
  const nudgeInput=input=>{if(!input)return;input.focus();input.dispatchEvent(new Event('input',{bubbles:true}));input.dispatchEvent(new Event('change',{bubbles:true}));};
  const chatValue=input=>{if(input.type==='radio'){const checked=radioOptions(input).find(r=>r.checked);return checked?radioLabel(checked).trim():'';}return input.matches('[contenteditable="true"]')?(input.textContent||'').trim():(input.value||'').trim();};
  const findSaveCandidate=()=>{const roots=[...document.querySelectorAll('.chatbot_Drawer,[class*="chatbot_Drawer"],[class*="chatbot"],.sendMsg')];const scope=roots.find(isVisible)||document;return [...scope.querySelectorAll('.sendMsg,button,a,[role="button"]')].find(e=>/^(save|save\s*&\s*next|next|continue|submit|send)$/i.test(txt(e)));};
@@ -120,8 +178,9 @@ const learned=learnedAnswer(q);
 async function tryAnswer(input,a){
     for(let attempt=0;attempt<3&&!userIntervened;attempt++){
       input=visibleInput()||input;
-      fill(input,a);
-      await new Promise(r=>setTimeout(r,CONFIG.delayAfterFillMs));
+      await fill(input,a);
+      if(userIntervened)return false;
+      await pause(CONFIG.afterTypeMs);
       input=visibleInput()||input;
       nudgeInput(input);
       let save=null;
@@ -131,20 +190,33 @@ async function tryAnswer(input,a){
         save=findSave();
       }
       if(userIntervened)return false;
-      if(chatValue(input)&&save&&save.getClientRects().length){save.click();return true;}
+      if(chatValue(input)&&save&&save.getClientRects().length){await pause(CONFIG.beforeClickMs);if(userIntervened)return false;save.click();return true;}
       await new Promise(r=>setTimeout(r,500));
     }
     return false;
   }
   async function run(){
-    await new Promise(r=>setTimeout(r,CONFIG.delayBeforeApplyMs));
+    // "Read" the job description: scroll down through it in a few uneven steps.
+    const readUntil=Date.now()+rand(CONFIG.readJobMs);
+    while(Date.now()<readUntil&&!userIntervened){
+      window.scrollBy({top:rand([120,420]),behavior:'smooth'});
+      await pause([900,2600]);
+    }
     if(userIntervened)return;
  let apply=null;for(let wait=0;wait<30&&!apply&&!userIntervened;wait++){apply=findApply();if(!apply)await new Promise(r=>setTimeout(r,500));}
     if(userIntervened)return;
-    if(!apply){const applied=appliedConfirmation();requestClose(applied?'already-applied-no-button':'no-apply-button-after-wait',!applied);return;}
-    apply.scrollIntoView({block:'center'});apply.click();
+    if(!apply){
+      const applied=appliedConfirmation();
+      const external=[...document.querySelectorAll('button,a,[role="button"]')].some(e=>isVisible(e)&&EXTERNAL_APPLY_RE.test(txt(e)));
+      if(external){requestClose('company-site-apply');return;}
+      requestClose(applied?'already-applied-no-button':'no-apply-button-after-wait',!applied);return;
+    }
+    apply.scrollIntoView({block:'center',behavior:'smooth'});
+    await pause([800,1800]);
+    if(userIntervened)return;
+    apply.click();
    for(let i=0;i<CONFIG.maxQuestions&&!userIntervened;i++){
-     await new Promise(r=>setTimeout(r,CONFIG.delayBetweenQuestionsMs));
+     await pause(CONFIG.thinkBeforeAnswerMs);
      if(userIntervened)return;
      let input=null;for(let wait=0;wait<20&&!input&&!userIntervened;wait++){input=visibleInput();if(!input)await new Promise(r=>setTimeout(r,400));}
      if(userIntervened)return;
@@ -156,9 +228,11 @@ async function tryAnswer(input,a){
      let a=answer(q,input);
      if(!a){
        if(!CONFIG.askForUnknownAnswer){notify(`New or sensitive recruiter question needs an answer; job skipped: ${q}`);requestClose('sensitive-unknown-question');return;}
+       postStatus('manual');
        const typed=window.prompt(`New recruiter question:\n\n${q}\n\nEnter the answer to use:`,'');
        if(userIntervened)return;
        if(!typed?.trim()){notify('Application paused for manual review.');return;}
+       postStatus('working');
        a=typed.trim();
        if(CONFIG.learnNewAnswers)await remember(q,a);
      }
@@ -170,8 +244,14 @@ async function tryAnswer(input,a){
    let confirmed=false;
    for(let wait=0;wait<20&&!confirmed&&!userIntervened;wait++){await new Promise(r=>setTimeout(r,500));confirmed=appliedConfirmation();}
    if(userIntervened)return;
- if(confirmed)notify('Application submitted successfully.');
-    else{notify('Application flow completed; Naukri did not expose a confirmation yet.');requestClose('no-confirmation-at-flow-end');}
+ if(confirmed){
+      notify('Application submitted successfully.');
+      // Usually Naukri moves to the result page (handled by the success script).
+      // If it shows the confirmation on this page instead, close it ourselves so
+      // the launcher can move on to the next job.
+      await pause([3000,5000]);
+      if(!userIntervened&&/\/job-listings-/.test(location.pathname))requestClose('applied-inline');
+    }else{notify('Application flow completed; Naukri did not expose a confirmation yet.');requestClose('no-confirmation-at-flow-end');}
   }
  window.naukriAnswerStore={list:()=>Object.values(storedRules),remove:q=>{const key=normalize(q);delete storedRules[key];persistRules();},clear:async()=>{storedRules={};await persistRules();}};
  loadRules().then(run);

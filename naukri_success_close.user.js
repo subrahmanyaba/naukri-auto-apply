@@ -41,7 +41,13 @@
         setTimeout(()=>{label.textContent='Browser kept this tab open; close it manually.';},700);
       }
     },1000);
-    box.querySelector('button').onclick=()=>{clearInterval(timer);label.textContent='Tab kept open';box.querySelector('button').remove();};
+    box.querySelector('button').onclick=()=>{
+      clearInterval(timer);label.textContent='Tab kept open — the queue waits until you close it';box.querySelector('button').remove();
+      // Tell the launcher to hold the queue instead of timing this job out.
+      const status={type:'status',state:'manual',jobId:id,nonce:`${id||'unknown'}-manual-${Date.now()}-${Math.random()}`};
+      try{closeChannel?.postMessage(status);}catch(_){ }
+      try{localStorage.setItem('codexNaukriStatus',JSON.stringify(status));}catch(_){ }
+    };
   };
   const check=()=>{
     if(handled)return;
